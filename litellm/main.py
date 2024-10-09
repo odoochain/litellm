@@ -150,7 +150,7 @@ from .types.utils import (
     CompletionTokensDetails,
     FileTypes,
     HiddenParams,
-    PromptTokensDetails,
+    PromptTokensDetails,  # openai 1.51.0 above
     all_litellm_params,
 )
 
