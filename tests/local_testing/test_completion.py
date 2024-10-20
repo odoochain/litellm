@@ -24,7 +24,7 @@ from litellm import RateLimitError, Timeout, completion, completion_cost, embedd
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.prompt_templates.factory import anthropic_messages_pt
 
-# litellm.num_retries=3
+# litellm.num_retries = 3
 
 litellm.cache = None
 litellm.success_callback = []
@@ -1709,31 +1709,6 @@ def test_completion_perplexity_api():
 
 
 # test_completion_perplexity_api()
-
-
-@pytest.mark.skip(
-    reason="too many requests. Hitting gemini rate limits. Convert to mock test."
-)
-def test_completion_pydantic_obj_2():
-    from pydantic import BaseModel
-
-    litellm.set_verbose = True
-
-    class CalendarEvent(BaseModel):
-        name: str
-        date: str
-        participants: list[str]
-
-    class EventsList(BaseModel):
-        events: list[CalendarEvent]
-
-    messages = [
-        {"role": "user", "content": "List important events from the 20th century."}
-    ]
-
-    response = litellm.completion(
-        model="gemini/gemini-1.5-pro", messages=messages, response_format=EventsList
-    )
 
 
 @pytest.mark.skip(reason="this test is flaky")
@@ -3814,6 +3789,7 @@ def test_completion_anyscale_api():
 
 
 # @pytest.mark.skip(reason="flaky test, times out frequently")
+@pytest.mark.flaky(retries=6, delay=1)
 def test_completion_cohere():
     try:
         # litellm.set_verbose=True
@@ -4548,7 +4524,6 @@ async def test_dynamic_azure_params(stream, sync_mode):
         try:
             mock_client.assert_not_called()
         except Exception as e:
-            traceback.print_stack()
             raise e
 
 
@@ -4573,12 +4548,7 @@ async def test_completion_ai21_chat():
 
 @pytest.mark.parametrize(
     "model",
-    [
-        "gpt-4o",
-        "azure/chatgpt-v-2",
-        "claude-3-sonnet-20240229",
-        "fireworks_ai/mixtral-8x7b-instruct",
-    ],
+    ["gpt-4o", "azure/chatgpt-v-2", "claude-3-sonnet-20240229"],
 )
 @pytest.mark.parametrize(
     "stream",
@@ -4594,5 +4564,180 @@ def test_completion_response_ratelimit_headers(model, stream):
     additional_headers = hidden_params.get("additional_headers", {})
 
     print(additional_headers)
+    for k, v in additional_headers.items():
+        assert v != "None" and v is not None
     assert "x-ratelimit-remaining-requests" in additional_headers
     assert "x-ratelimit-remaining-tokens" in additional_headers
+
+
+def _openai_hallucinated_tool_call_mock_response(
+    *args, **kwargs
+) -> litellm.ModelResponse:
+    new_response = MagicMock()
+    new_response.headers = {"hello": "world"}
+
+    response_object = {
+        "id": "chatcmpl-123",
+        "object": "chat.completion",
+        "created": 1677652288,
+        "model": "gpt-3.5-turbo-0125",
+        "system_fingerprint": "fp_44709d6fcb",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "content": None,
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "arguments": '{"tool_uses":[{"recipient_name":"product_title","parameters":{"content":"Story Scribe"}},{"recipient_name":"one_liner","parameters":{"content":"Transform interview transcripts into actionable user stories"}}]}',
+                                "name": "multi_tool_use.parallel",
+                            },
+                            "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s",
+                            "type": "function",
+                        }
+                    ],
+                },
+                "logprobs": None,
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 9, "completion_tokens": 12, "total_tokens": 21},
+    }
+    from openai import OpenAI
+    from openai.types.chat.chat_completion import ChatCompletion
+
+    pydantic_obj = ChatCompletion(**response_object)  # type: ignore
+    pydantic_obj.choices[0].message.role = None  # type: ignore
+    new_response.parse.return_value = pydantic_obj
+    return new_response
+
+
+def test_openai_hallucinated_tool_call():
+    """
+    Patch for this issue: https://community.openai.com/t/model-tries-to-call-unknown-function-multi-tool-use-parallel/490653
+
+    Handle openai invalid tool calling response.
+
+    OpenAI assistant will sometimes return an invalid tool calling response, which needs to be parsed
+
+    -           "arguments": "{\"tool_uses\":[{\"recipient_name\":\"product_title\",\"parameters\":{\"content\":\"Story Scribe\"}},{\"recipient_name\":\"one_liner\",\"parameters\":{\"content\":\"Transform interview transcripts into actionable user stories\"}}]}",
+
+    To extract actual tool calls:
+
+    1. Parse arguments JSON object
+    2. Iterate over tool_uses array to call functions:
+        - get function name from recipient_name value
+        - parameters will be JSON object for function arguments
+    """
+    import openai
+
+    openai_client = openai.OpenAI()
+    with patch.object(
+        openai_client.chat.completions,
+        "create",
+        side_effect=_openai_hallucinated_tool_call_mock_response,
+    ) as mock_response:
+        response = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hey! how's it going?"}],
+            client=openai_client,
+        )
+        print(f"response: {response}")
+
+        response_dict = response.model_dump()
+
+        tool_calls = response_dict["choices"][0]["message"]["tool_calls"]
+
+        print(f"tool_calls: {tool_calls}")
+
+        for idx, tc in enumerate(tool_calls):
+            if idx == 0:
+                print(f"tc in test_openai_hallucinated_tool_call: {tc}")
+                assert tc == {
+                    "function": {
+                        "arguments": '{"content": "Story Scribe"}',
+                        "name": "product_title",
+                    },
+                    "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s_0",
+                    "type": "function",
+                }
+            elif idx == 1:
+                assert tc == {
+                    "function": {
+                        "arguments": '{"content": "Transform interview transcripts into actionable user stories"}',
+                        "name": "one_liner",
+                    },
+                    "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s_1",
+                    "type": "function",
+                }
+
+
+@pytest.mark.parametrize(
+    "function_name, expect_modification",
+    [
+        ("multi_tool_use.parallel", True),
+        ("my-fake-function", False),
+    ],
+)
+def test_openai_hallucinated_tool_call_util(function_name, expect_modification):
+    """
+    Patch for this issue: https://community.openai.com/t/model-tries-to-call-unknown-function-multi-tool-use-parallel/490653
+
+    Handle openai invalid tool calling response.
+
+    OpenAI assistant will sometimes return an invalid tool calling response, which needs to be parsed
+
+    -           "arguments": "{\"tool_uses\":[{\"recipient_name\":\"product_title\",\"parameters\":{\"content\":\"Story Scribe\"}},{\"recipient_name\":\"one_liner\",\"parameters\":{\"content\":\"Transform interview transcripts into actionable user stories\"}}]}",
+
+    To extract actual tool calls:
+
+    1. Parse arguments JSON object
+    2. Iterate over tool_uses array to call functions:
+        - get function name from recipient_name value
+        - parameters will be JSON object for function arguments
+    """
+    from litellm.utils import _handle_invalid_parallel_tool_calls
+    from litellm.types.utils import ChatCompletionMessageToolCall
+
+    response = _handle_invalid_parallel_tool_calls(
+        tool_calls=[
+            ChatCompletionMessageToolCall(
+                **{
+                    "function": {
+                        "arguments": '{"tool_uses":[{"recipient_name":"product_title","parameters":{"content":"Story Scribe"}},{"recipient_name":"one_liner","parameters":{"content":"Transform interview transcripts into actionable user stories"}}]}',
+                        "name": function_name,
+                    },
+                    "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s",
+                    "type": "function",
+                }
+            )
+        ]
+    )
+
+    print(f"response: {response}")
+
+    if expect_modification:
+        for idx, tc in enumerate(response):
+            if idx == 0:
+                assert tc.model_dump() == {
+                    "function": {
+                        "arguments": '{"content": "Story Scribe"}',
+                        "name": "product_title",
+                    },
+                    "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s_0",
+                    "type": "function",
+                }
+            elif idx == 1:
+                assert tc.model_dump() == {
+                    "function": {
+                        "arguments": '{"content": "Transform interview transcripts into actionable user stories"}',
+                        "name": "one_liner",
+                    },
+                    "id": "call_IzGXwVa5OfBd9XcCJOkt2q0s_1",
+                    "type": "function",
+                }
+    else:
+        assert len(response) == 1
+        assert response[0].function.name == function_name

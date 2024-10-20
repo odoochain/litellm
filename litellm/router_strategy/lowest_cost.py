@@ -9,7 +9,7 @@ from pydantic import BaseModel
 import litellm
 from litellm import ModelResponse, token_counter, verbose_logger
 from litellm._logging import verbose_router_logger
-from litellm.caching import DualCache
+from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 
 
@@ -209,7 +209,7 @@ class LowestCostLoggingHandler(CustomLogger):
             )
             pass
 
-    async def async_get_available_deployments(
+    async def async_get_available_deployments(  # noqa: PLR0915
         self,
         model_group: str,
         healthy_deployments: list,

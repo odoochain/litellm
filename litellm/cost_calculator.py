@@ -37,12 +37,16 @@ from litellm.llms.databricks.cost_calculator import (
 from litellm.llms.fireworks_ai.cost_calculator import (
     cost_per_token as fireworks_ai_cost_per_token,
 )
+from litellm.llms.OpenAI.cost_calculation import (
+    cost_per_second as openai_cost_per_second,
+)
 from litellm.llms.OpenAI.cost_calculation import cost_per_token as openai_cost_per_token
+from litellm.llms.OpenAI.cost_calculation import cost_router as openai_cost_router
 from litellm.llms.together_ai.cost_calculator import get_model_params_and_category
 from litellm.types.llms.openai import HttpxBinaryResponseContent
 from litellm.types.rerank import RerankResponse
 from litellm.types.router import SPECIAL_MODEL_INFO_PARAMS
-from litellm.types.utils import PassthroughCallTypes, Usage
+from litellm.types.utils import CallTypesLiteral, PassthroughCallTypes, Usage
 from litellm.utils import (
     CallTypes,
     CostPerToken,
@@ -79,7 +83,7 @@ def _cost_per_token_custom_pricing_helper(
     return None
 
 
-def cost_per_token(
+def cost_per_token(  # noqa: PLR0915
     model: str = "",
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
@@ -87,8 +91,8 @@ def cost_per_token(
     custom_llm_provider: Optional[str] = None,
     region_name=None,
     ### CHARACTER PRICING ###
-    prompt_characters: int = 0,
-    completion_characters: int = 0,
+    prompt_characters: Optional[int] = None,
+    completion_characters: Optional[int] = None,
     ### PROMPT CACHING PRICING ### - used for anthropic
     cache_creation_input_tokens: Optional[int] = 0,
     cache_read_input_tokens: Optional[int] = 0,
@@ -97,25 +101,10 @@ def cost_per_token(
     custom_cost_per_second: Optional[float] = None,
     ### NUMBER OF QUERIES ###
     number_of_queries: Optional[int] = None,
+    ### USAGE OBJECT ###
+    usage_object: Optional[Usage] = None,  # just read the usage object if provided
     ### CALL TYPE ###
-    call_type: Literal[
-        "embedding",
-        "aembedding",
-        "completion",
-        "acompletion",
-        "atext_completion",
-        "text_completion",
-        "image_generation",
-        "aimage_generation",
-        "moderation",
-        "amoderation",
-        "atranscription",
-        "transcription",
-        "aspeech",
-        "speech",
-        "rerank",
-        "arerank",
-    ] = "completion",
+    call_type: CallTypesLiteral = "completion",
 ) -> Tuple[float, float]:  # type: ignore
     """
     Calculates the cost per token for a given model, prompt tokens, and completion tokens.
@@ -139,13 +128,16 @@ def cost_per_token(
         raise Exception("Invalid arg. Model cannot be none.")
 
     ## RECONSTRUCT USAGE BLOCK ##
-    usage_block = Usage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        cache_creation_input_tokens=cache_creation_input_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
-    )
+    if usage_object is not None:
+        usage_block = usage_object
+    else:
+        usage_block = Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+        )
 
     ## CUSTOM PRICING ##
     response_cost = _cost_per_token_custom_pricing_helper(
@@ -201,13 +193,24 @@ def cost_per_token(
         model = model_without_prefix
 
     # see this https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models
-    print_verbose(f"Looking up model={model} in model_cost_map")
+    print_verbose(
+        f"Looking up model={model} in model_cost_map, custom_llm_provider={custom_llm_provider}, call_type={call_type}"
+    )
     if call_type == "speech" or call_type == "aspeech":
+        if prompt_characters is None:
+            raise ValueError(
+                "prompt_characters must be provided for tts calls. prompt_characters={}, model={}, custom_llm_provider={}, call_type={}".format(
+                    prompt_characters,
+                    model,
+                    custom_llm_provider,
+                    call_type,
+                )
+            )
         prompt_cost, completion_cost = _generic_cost_per_character(
             model=model_without_prefix,
             custom_llm_provider=custom_llm_provider,
             prompt_characters=prompt_characters,
-            completion_characters=completion_characters,
+            completion_characters=0,
             custom_prompt_cost=None,
             custom_completion_cost=0,
         )
@@ -232,10 +235,6 @@ def cost_per_token(
         cost_router = google_cost_router(
             model=model_without_prefix,
             custom_llm_provider=custom_llm_provider,
-            prompt_characters=prompt_characters,
-            completion_characters=completion_characters,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
             call_type=call_type,
         )
         if cost_router == "cost_per_character":
@@ -257,9 +256,13 @@ def cost_per_token(
     elif custom_llm_provider == "anthropic":
         return anthropic_cost_per_token(model=model, usage=usage_block)
     elif custom_llm_provider == "openai":
-        return openai_cost_per_token(
-            model=model, usage=usage_block, response_time_ms=response_time_ms
-        )
+        openai_cost_route = openai_cost_router(call_type=CallTypes(call_type))
+        if openai_cost_route == "cost_per_token":
+            return openai_cost_per_token(model=model, usage=usage_block)
+        elif openai_cost_route == "cost_per_second":
+            return openai_cost_per_second(
+                model=model, usage=usage_block, response_time_ms=response_time_ms
+            )
     elif custom_llm_provider == "databricks":
         return databricks_cost_per_token(model=model, usage=usage_block)
     elif custom_llm_provider == "fireworks_ai":
@@ -467,31 +470,53 @@ def _select_model_name_for_cost_calc(
     return return_model
 
 
-def completion_cost(
+def _get_usage_object(
+    completion_response: Any,
+) -> Optional[Usage]:
+    usage_obj: Optional[Usage] = None
+    if completion_response is not None and isinstance(
+        completion_response, ModelResponse
+    ):
+        usage_obj = completion_response.get("usage")
+
+    return usage_obj
+
+
+def _infer_call_type(
+    call_type: Optional[CallTypesLiteral], completion_response: Any
+) -> Optional[CallTypesLiteral]:
+    if call_type is not None:
+        return call_type
+
+    if completion_response is None:
+        return None
+
+    if isinstance(completion_response, ModelResponse):
+        return "completion"
+    elif isinstance(completion_response, EmbeddingResponse):
+        return "embedding"
+    elif isinstance(completion_response, TranscriptionResponse):
+        return "transcription"
+    elif isinstance(completion_response, HttpxBinaryResponseContent):
+        return "speech"
+    elif isinstance(completion_response, RerankResponse):
+        return "rerank"
+    elif isinstance(completion_response, ImageResponse):
+        return "image_generation"
+    elif isinstance(completion_response, TextCompletionResponse):
+        return "text_completion"
+
+    return call_type
+
+
+def completion_cost(  # noqa: PLR0915
     completion_response=None,
     model: Optional[str] = None,
     prompt="",
     messages: List = [],
     completion="",
     total_time: Optional[float] = 0.0,  # used for replicate, sagemaker
-    call_type: Literal[
-        "embedding",
-        "aembedding",
-        "completion",
-        "acompletion",
-        "atext_completion",
-        "text_completion",
-        "image_generation",
-        "aimage_generation",
-        "moderation",
-        "amoderation",
-        "atranscription",
-        "transcription",
-        "aspeech",
-        "speech",
-        "rerank",
-        "arerank",
-    ] = "completion",
+    call_type: Optional[CallTypesLiteral] = None,
     ### REGION ###
     custom_llm_provider=None,
     region_name=None,  # used for bedrock pricing
@@ -532,6 +557,7 @@ def completion_cost(
         - For un-mapped Replicate models, the cost is calculated based on the total time used for the request.
     """
     try:
+        call_type = _infer_call_type(call_type, completion_response) or "completion"
         if (
             (call_type == "aimage_generation" or call_type == "image_generation")
             and model is not None
@@ -542,11 +568,14 @@ def completion_cost(
             model = "dall-e-2"  # for dall-e-2, azure expects an empty model name
         # Handle Inputs to completion_cost
         prompt_tokens = 0
-        prompt_characters = 0
+        prompt_characters: Optional[int] = None
         completion_tokens = 0
-        completion_characters = 0
+        completion_characters: Optional[int] = None
         cache_creation_input_tokens: Optional[int] = None
         cache_read_input_tokens: Optional[int] = None
+        cost_per_token_usage_object: Optional[litellm.Usage] = _get_usage_object(
+            completion_response=completion_response
+        )
         if completion_response is not None and (
             isinstance(completion_response, BaseModel)
             or isinstance(completion_response, dict)
@@ -686,7 +715,11 @@ def completion_cost(
                 completion_response, RerankResponse
             ):
                 meta_obj = completion_response.meta
-                billed_units = meta_obj.get("billed_units", {}) or {}
+                if meta_obj is not None:
+                    billed_units = meta_obj.get("billed_units", {}) or {}
+                else:
+                    billed_units = {}
+
                 search_units = (
                     billed_units.get("search_units") or 1
                 )  # cohere charges per request by default.
@@ -721,10 +754,8 @@ def completion_cost(
                 prompt_string = litellm.utils.get_formatted_prompt(
                     data={"messages": messages}, call_type="completion"
                 )
-            else:
-                prompt_string = ""
 
-            prompt_characters = litellm.utils._count_characters(text=prompt_string)
+                prompt_characters = litellm.utils._count_characters(text=prompt_string)
             if completion_response is not None and isinstance(
                 completion_response, ModelResponse
             ):
@@ -751,6 +782,7 @@ def completion_cost(
             completion_characters=completion_characters,
             cache_creation_input_tokens=cache_creation_input_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
+            usage_object=cost_per_token_usage_object,
             call_type=call_type,
         )
         _final_cost = prompt_tokens_cost_usd_dollar + completion_tokens_cost_usd_dollar

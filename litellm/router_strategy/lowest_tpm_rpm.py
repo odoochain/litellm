@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from litellm import token_counter
 from litellm._logging import verbose_router_logger
-from litellm.caching import DualCache
+from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.utils import print_verbose
 
@@ -166,7 +166,7 @@ class LowestTPMLoggingHandler(CustomLogger):
             verbose_router_logger.debug(traceback.format_exc())
             pass
 
-    def get_available_deployments(
+    def get_available_deployments(  # noqa: PLR0915
         self,
         model_group: str,
         healthy_deployments: list,

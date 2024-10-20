@@ -75,15 +75,17 @@ from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 from litellm.proxy.utils import _to_ns
 
 api_key_header = APIKeyHeader(
-    name="Authorization", auto_error=False, description="Bearer token"
+    name=SpecialHeaders.openai_authorization.value,
+    auto_error=False,
+    description="Bearer token",
 )
 azure_api_key_header = APIKeyHeader(
-    name="API-Key",
+    name=SpecialHeaders.azure_authorization.value,
     auto_error=False,
     description="Some older versions of the openai Python package will send an API-Key header with just the API key ",
 )
 anthropic_api_key_header = APIKeyHeader(
-    name="x-api-key",
+    name=SpecialHeaders.anthropic_authorization.value,
     auto_error=False,
     description="If anthropic client used.",
 )
@@ -103,7 +105,7 @@ def _get_bearer_token(
     return api_key
 
 
-async def user_api_key_auth(
+async def user_api_key_auth(  # noqa: PLR0915
     request: Request,
     api_key: str = fastapi.Security(api_key_header),
     azure_api_key_header: str = fastapi.Security(azure_api_key_header),

@@ -7,7 +7,7 @@ import threading
 import os
 from typing import Callable, List, Optional, Dict, Union, Any, Literal, get_args
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.caching import Cache
+from litellm.caching.caching import Cache, DualCache, RedisCache, InMemoryCache
 from litellm._logging import (
     set_verbose,
     _turn_on_debug,
@@ -51,7 +51,10 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "galileo",
     "braintrust",
     "arize",
+    "langtrace",
     "gcs_bucket",
+    "opik",
+    "argilla",
 ]
 _known_custom_logger_compatible_callbacks: List = list(
     get_args(_custom_logger_compatible_callbacks_literal)
@@ -59,6 +62,8 @@ _known_custom_logger_compatible_callbacks: List = list(
 callbacks: List[Union[Callable, _custom_logger_compatible_callbacks_literal]] = []
 langfuse_default_tags: Optional[List[str]] = None
 langsmith_batch_size: Optional[int] = None
+argilla_batch_size: Optional[int] = None
+argilla_transformation_object: Optional[Dict[str, Any]] = None
 _async_input_callback: List[Callable] = (
     []
 )  # internal variable - async custom callbacks are routed here.
@@ -929,7 +934,7 @@ from .llms.vertex_ai_and_google_ai_studio.vertex_embeddings.transformation impor
 
 vertexAITextEmbeddingConfig = VertexAITextEmbeddingConfig()
 
-from .llms.vertex_ai_and_google_ai_studio.vertex_ai_anthropic import (
+from .llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.anthropic.transformation import (
     VertexAIAnthropicConfig,
 )
 from .llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.llama3.transformation import (
@@ -982,9 +987,18 @@ from .llms.mistral.mistral_chat_transformation import MistralConfig
 from .llms.OpenAI.chat.o1_transformation import (
     OpenAIO1Config,
 )
+
+openAIO1Config = OpenAIO1Config()
 from .llms.OpenAI.chat.gpt_transformation import (
     OpenAIGPTConfig,
 )
+
+openAIGPTConfig = OpenAIGPTConfig()
+from .llms.OpenAI.chat.gpt_audio_transformation import (
+    OpenAIGPTAudioConfig,
+)
+
+openAIGPTAudioConfig = OpenAIGPTAudioConfig()
 
 from .llms.nvidia_nim.chat import NvidiaNimConfig
 from .llms.nvidia_nim.embed import NvidiaNimEmbeddingConfig
@@ -1002,10 +1016,11 @@ from .llms.fireworks_ai.embed.fireworks_ai_transformation import (
 from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
 from .llms.AzureOpenAI.azure import (
-    AzureOpenAIConfig,
     AzureOpenAIError,
     AzureOpenAIAssistantsAPIConfig,
 )
+
+from .llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
 from .llms.hosted_vllm.chat.transformation import HostedVLLMChatConfig
 from .llms.AzureOpenAI.chat.o1_transformation import AzureOpenAIO1Config
 from .llms.watsonx import IBMWatsonXAIConfig
@@ -1038,6 +1053,7 @@ from .proxy.proxy_cli import run_server
 from .router import Router
 from .assistants.main import *
 from .batches.main import *
+from .batch_completion.main import *
 from .rerank_api.main import *
 from .realtime_api.main import _arealtime
 from .fine_tuning.main import *

@@ -7,6 +7,7 @@ import os
 import time
 import types
 import uuid
+from copy import deepcopy
 from enum import Enum
 from functools import partial
 from typing import (
@@ -65,9 +66,11 @@ from litellm.types.llms.vertex_ai import (
 from litellm.types.utils import GenericStreamingChunk
 from litellm.utils import CustomStreamWrapper, ModelResponse, Usage
 
+from ....utils import _remove_additional_properties, _remove_strict_from_schema
 from ...base import BaseLLM
 from ..common_utils import (
     VertexAIError,
+    _build_vertex_schema,
     _get_gemini_url,
     _get_vertex_url,
     all_gemini_url_modes,
@@ -251,6 +254,21 @@ class VertexAIConfig:
             "europe-west9",
         ]
 
+    def get_us_regions(self) -> List[str]:
+        """
+        Source: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations#available-regions
+        """
+        return [
+            "us-central1",
+            "us-east1",
+            "us-east4",
+            "us-east5",
+            "us-south1",
+            "us-west1",
+            "us-west4",
+            "us-west5",
+        ]
+
 
 class VertexGeminiConfig:
     """
@@ -376,7 +394,10 @@ class VertexGeminiConfig:
     def _map_function(self, value: List[dict]) -> List[Tools]:
         gtool_func_declarations = []
         googleSearchRetrieval: Optional[dict] = None
-
+        # remove 'additionalProperties' from tools
+        value = _remove_additional_properties(value)
+        # remove 'strict' from tools
+        value = _remove_strict_from_schema(value)
         for tool in value:
             openai_function_object: Optional[ChatCompletionToolParamFunctionChunk] = (
                 None
@@ -437,6 +458,10 @@ class VertexGeminiConfig:
             if param == "max_tokens" or param == "max_completion_tokens":
                 optional_params["max_output_tokens"] = value
             if param == "response_format" and isinstance(value, dict):  # type: ignore
+                # remove 'additionalProperties' from json schema
+                value = _remove_additional_properties(value)
+                # remove 'strict' from json schema
+                value = _remove_strict_from_schema(value)
                 if value["type"] == "json_object":
                     optional_params["response_mime_type"] = "application/json"
                 elif value["type"] == "text":
@@ -448,6 +473,19 @@ class VertexGeminiConfig:
                     if "json_schema" in value and "schema" in value["json_schema"]:  # type: ignore
                         optional_params["response_mime_type"] = "application/json"
                         optional_params["response_schema"] = value["json_schema"]["schema"]  # type: ignore
+
+                if "response_schema" in optional_params and isinstance(
+                    optional_params["response_schema"], dict
+                ):
+                    old_schema = deepcopy(optional_params["response_schema"])
+
+                    if isinstance(old_schema, list):
+                        for item in old_schema:
+                            if isinstance(item, dict):
+                                item = _build_vertex_schema(parameters=item)
+                    elif isinstance(old_schema, dict):
+                        old_schema = _build_vertex_schema(parameters=old_schema)
+                    optional_params["response_schema"] = old_schema
             if param == "frequency_penalty":
                 optional_params["frequency_penalty"] = value
             if param == "presence_penalty":
@@ -704,7 +742,7 @@ class VertexLLM(VertexBase):
     def __init__(self) -> None:
         super().__init__()
 
-    def _process_response(
+    def _process_response(  # noqa: PLR0915
         self,
         model: str,
         response: httpx.Response,
@@ -849,10 +887,16 @@ class VertexLLM(VertexBase):
 
                     if "citationMetadata" in candidate:
                         citation_metadata.append(candidate["citationMetadata"])
-                    if "text" in candidate["content"]["parts"][0]:
+                    if (
+                        "parts" in candidate["content"]
+                        and "text" in candidate["content"]["parts"][0]
+                    ):
                         content_str = candidate["content"]["parts"][0]["text"]
 
-                    if "functionCall" in candidate["content"]["parts"][0]:
+                    if (
+                        "parts" in candidate["content"]
+                        and "functionCall" in candidate["content"]["parts"][0]
+                    ):
                         _function_chunk = ChatCompletionToolCallFunctionChunk(
                             name=candidate["content"]["parts"][0]["functionCall"][
                                 "name"
@@ -1320,7 +1364,11 @@ class ModelResponseIterator:
             if _candidates and len(_candidates) > 0:
                 gemini_chunk = _candidates[0]
 
-            if gemini_chunk and "content" in gemini_chunk:
+            if (
+                gemini_chunk
+                and "content" in gemini_chunk
+                and "parts" in gemini_chunk["content"]
+            ):
                 if "text" in gemini_chunk["content"]["parts"][0]:
                     text = gemini_chunk["content"]["parts"][0]["text"]
                 elif "functionCall" in gemini_chunk["content"]["parts"][0]:

@@ -226,7 +226,7 @@ def test_all_model_configs():
         optional_params={},
     ) == {"max_tokens": 10}
 
-    from litellm.llms.AzureOpenAI.azure import AzureOpenAIConfig
+    from litellm.llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
 
     assert "max_completion_tokens" in AzureOpenAIConfig().get_supported_openai_params()
     assert AzureOpenAIConfig().map_openai_params(
@@ -296,7 +296,7 @@ def test_all_model_configs():
         optional_params={},
     ) == {"max_tokens": 10}
 
-    from litellm.llms.vertex_ai_and_google_ai_studio.vertex_ai_anthropic import (
+    from litellm.llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.anthropic.transformation import (
         VertexAIAnthropicConfig,
     )
 

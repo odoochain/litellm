@@ -1,4 +1,7 @@
-version: 4.3.4
+version: 2.1
+orbs:
+  codecov: codecov/codecov@4.0.1
+
 jobs:
   local_testing:
     docker:
@@ -27,6 +30,7 @@ jobs:
             pip install "pytest==7.3.1"
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
+            pip install "pytest-cov==5.0.0"
             pip install mypy
             pip install "google-generativeai==0.3.2"
             pip install "google-cloud-aiplatform==1.43.0"
@@ -43,7 +47,7 @@ jobs:
             pip install opentelemetry-api==1.25.0
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
-            pip install openai==1.51.0
+            pip install openai==1.52.0
             pip install prisma==0.11.0   
             pip install "detect_secrets==1.5.0"         
             pip install "httpx==0.24.1"
@@ -99,12 +103,22 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/local_testing -x --junitxml=test-results/junit.xml --durations=5 -k "not test_python_38.py and not router and not assistants"
+            python -m pytest -vv tests/local_testing --cov=litellm --cov-report=xml -x --junitxml=test-results/junit.xml --durations=5 -k "not test_python_38.py and not router and not assistants"
           no_output_timeout: 120m
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml local_testing_coverage.xml
+            mv .coverage local_testing_coverage
 
       # Store test results
       - store_test_results:
           path: test-results
+      - persist_to_workspace:
+          root: .
+          paths:
+            - local_testing_coverage.xml
+            - local_testing_coverage
   ui_endpoint_testing:
     docker:
       - image: cimg/python:3.11
@@ -123,6 +137,7 @@ jobs:
             pip install "pytest==7.3.1"
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
+            pip install "pytest-cov==5.0.0"
       - save_cache:
           paths:
             - ./venv
@@ -140,12 +155,24 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/proxy_admin_ui_tests -x --junitxml=test-results/junit.xml --durations=5
+            python -m pytest -vv tests/proxy_admin_ui_tests -x --cov=litellm --cov-report=xml --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
+
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml ui_endpoint_testing_coverage.xml
+            mv .coverage ui_endpoint_testing_coverage
 
       # Store test results
       - store_test_results:
           path: test-results
+      
+      - persist_to_workspace:
+          root: .
+          paths:
+            - ui_endpoint_testing_coverage.xml
+            - ui_endpoint_testing_coverage
   litellm_router_testing: # Runs all tests with the "router" keyword
     docker:
         - image: cimg/python:3.11
@@ -163,6 +190,7 @@ jobs:
             python -m pip install -r requirements.txt
             pip install "pytest==7.3.1"
             pip install "respx==0.21.1"
+            pip install "pytest-cov==5.0.0"
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
       # Run pytest and generate JUnit XML report
@@ -171,11 +199,22 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest tests/local_testing -vv -k "router" -x -s -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest tests/local_testing tests/router_unit_tests --cov=litellm --cov-report=xml -vv -k "router" -x -s -v --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml litellm_router_coverage.xml
+            mv .coverage litellm_router_coverage
       # Store test results
       - store_test_results:
           path: test-results
+
+      - persist_to_workspace:
+          root: .
+          paths:
+            - litellm_router_coverage.xml
+            - litellm_router_coverage
   litellm_assistants_api_testing: # Runs all tests with the "assistants" keyword
     docker:
         - image: cimg/python:3.11
@@ -195,17 +234,28 @@ jobs:
             pip install "respx==0.21.1"
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
+            pip install "pytest-cov==5.0.0"
       # Run pytest and generate JUnit XML report
       - run:
           name: Run tests
           command: |
             pwd
             ls
-            python -m pytest tests/local_testing/ -vv -k "assistants" -x -s -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest tests/local_testing/ -vv -k "assistants" --cov=litellm --cov-report=xml -x -s -v --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml litellm_assistants_api_coverage.xml
+            mv .coverage litellm_assistants_api_coverage
       # Store test results
       - store_test_results:
           path: test-results
+      - persist_to_workspace:
+          root: .
+          paths:
+            - litellm_assistants_api_coverage.xml
+            - litellm_assistants_api_coverage
   load_testing:
     docker:
       - image: cimg/python:3.11
@@ -253,6 +303,7 @@ jobs:
             python -m pip install -r requirements.txt
             pip install "pytest==7.3.1"
             pip install "pytest-retry==1.6.3"
+            pip install "pytest-cov==5.0.0"
             pip install "pytest-asyncio==0.21.1"
             pip install "respx==0.21.1"
       # Run pytest and generate JUnit XML report
@@ -261,13 +312,64 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/llm_translation -x -s -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest -vv tests/llm_translation --cov=litellm --cov-report=xml -x -s -v --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
-
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml llm_translation_coverage.xml
+            mv .coverage llm_translation_coverage
+        
       # Store test results
       - store_test_results:
           path: test-results
+      - persist_to_workspace:
+          root: .
+          paths:
+            - llm_translation_coverage.xml
+            - llm_translation_coverage
+  logging_testing:
+    docker:
+      - image: cimg/python:3.11
+        auth:
+          username: ${DOCKERHUB_USERNAME}
+          password: ${DOCKERHUB_PASSWORD}
+    working_directory: ~/project
 
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+            pip install "pytest==7.3.1"
+            pip install "pytest-retry==1.6.3"
+            pip install "pytest-cov==5.0.0"
+            pip install "pytest-asyncio==0.21.1"
+            pip install "respx==0.21.1"
+      # Run pytest and generate JUnit XML report
+      - run:
+          name: Run tests
+          command: |
+            pwd
+            ls
+            python -m pytest -vv tests/logging_callback_tests --cov=litellm --cov-report=xml -x -s -v --junitxml=test-results/junit.xml --durations=5
+          no_output_timeout: 120m
+      - run:
+          name: Rename the coverage files
+          command: |
+            mv coverage.xml logging_coverage.xml
+            mv .coverage logging_coverage
+        
+      # Store test results
+      - store_test_results:
+          path: test-results
+      - persist_to_workspace:
+          root: .
+          paths:
+            - logging_coverage.xml
+            - logging_coverage
   installing_litellm_on_python:
     docker:
       - image: circleci/python:3.8
@@ -320,6 +422,8 @@ jobs:
       - run: python -c "from litellm import *" || (echo '🚨 import failed, this means you introduced unprotected imports! 🚨'; exit 1)
       - run: ruff check ./litellm
       - run: python ./tests/documentation_tests/test_general_setting_keys.py
+      - run: python ./tests/code_coverage_tests/router_code_coverage.py
+      - run: python ./tests/documentation_tests/test_env_keys.py
     
   db_migration_disable_update_check:
     machine:
@@ -413,7 +517,7 @@ jobs:
             pip install "aiodynamo==23.10.1"
             pip install "asyncio==3.4.3"
             pip install "PyGithub==1.59.1"
-            pip install "openai==1.51.0"
+            pip install "openai==1.52.0"
             # Run pytest and generate JUnit XML report
       - run:
           name: Build Docker image
@@ -503,26 +607,34 @@ jobs:
           name: Install Dependencies
           command: |
             pip install "pytest==7.3.1"
-            pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
             pip install aiohttp
-            pip install "openai==1.51.0"
             python -m pip install --upgrade pip
-            pip install "pydantic==2.7.1"
+            python -m pip install -r .circleci/requirements.txt
             pip install "pytest==7.3.1"
+            pip install "pytest-retry==1.6.3"
             pip install "pytest-mock==3.12.0"
             pip install "pytest-asyncio==0.21.1"
-            pip install "boto3==1.34.34"
             pip install mypy
+            pip install "google-generativeai==0.3.2"
+            pip install "google-cloud-aiplatform==1.43.0"
             pip install pyarrow
+            pip install "boto3==1.34.34"
+            pip install "aioboto3==12.3.0"
+            pip install langchain
+            pip install "langfuse>=2.0.0"
+            pip install "logfire==0.29.0"
             pip install numpydoc
             pip install prisma            
             pip install fastapi            
             pip install jsonschema   
             pip install "httpx==0.24.1"
+            pip install "gunicorn==21.2.0"
             pip install "anyio==3.7.1"
+            pip install "aiodynamo==23.10.1"
             pip install "asyncio==3.4.3"
             pip install "PyGithub==1.59.1"
+            pip install "openai==1.52.0"
       - run:
           name: Build Docker image
           command: docker build -t my-app:latest -f ./docker/Dockerfile.database .
@@ -614,7 +726,7 @@ jobs:
             pip install "pytest-asyncio==0.21.1"
             pip install "google-cloud-aiplatform==1.43.0"
             pip install aiohttp
-            pip install "openai==1.51.0"
+            pip install "openai==1.52.0"
             python -m pip install --upgrade pip
             pip install "pydantic==2.7.1"
             pip install "pytest==7.3.1"
@@ -677,6 +789,33 @@ jobs:
       # Store test results
       - store_test_results:
           path: test-results
+
+  upload-coverage:
+    docker:
+      - image: cimg/python:3.9
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      # Check file locations
+      - run:
+          name: Check coverage file location
+          command: |
+            echo "Current directory:"
+            ls -la
+            echo "\nContents of tests/llm_translation:"
+            ls -la tests/llm_translation
+      - run:
+          name: Combine Coverage
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install coverage
+            coverage combine llm_translation_coverage logging_coverage litellm_router_coverage local_testing_coverage litellm_assistants_api_coverage ui_endpoint_testing_coverage
+            coverage xml
+      - codecov/upload:
+          file: ./coverage.xml
+
 
   publish_to_pypi:
     docker:
@@ -782,7 +921,7 @@ jobs:
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
             pip install aiohttp
-            pip install "openai==1.51.0"
+            pip install "openai==1.52.0"
             python -m pip install --upgrade pip
             pip install "pydantic==2.7.1"
             pip install "pytest==7.3.1"
@@ -908,6 +1047,20 @@ workflows:
               only:
                 - main
                 - /litellm_.*/
+      - logging_testing:
+          filters:
+            branches:
+              only:
+                - main
+                - /litellm_.*/
+      - upload-coverage:
+          requires:
+            - llm_translation_testing
+            - logging_testing
+            - litellm_router_testing
+            - local_testing
+            - litellm_assistants_api_testing
+            - ui_endpoint_testing
       - db_migration_disable_update_check:
           filters:
             branches:
@@ -932,6 +1085,7 @@ workflows:
             - build_and_test
             - load_testing
             - llm_translation_testing
+            - logging_testing
             - litellm_router_testing
             - litellm_assistants_api_testing
             - ui_endpoint_testing
@@ -945,3 +1099,4 @@ workflows:
             branches:
               only:
                 - main
+      

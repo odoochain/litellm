@@ -29,7 +29,7 @@ import requests  # type: ignore
 
 import litellm
 from litellm import verbose_logger
-from litellm.caching import InMemoryCache
+from litellm.caching.caching import InMemoryCache
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.llms.custom_httpx.http_handler import (
@@ -308,7 +308,7 @@ class BedrockLLM(BaseAWSLLM):
                     prompt += f"{message['content']}"
         return prompt, chat_history  # type: ignore
 
-    def process_response(
+    def process_response(  # noqa: PLR0915
         self,
         model: str,
         response: Union[requests.Response, httpx.Response],
@@ -574,7 +574,7 @@ class BedrockLLM(BaseAWSLLM):
         """
         return urllib.parse.quote(model_id, safe="")
 
-    def completion(
+    def completion(  # noqa: PLR0915
         self,
         model: str,
         messages: list,

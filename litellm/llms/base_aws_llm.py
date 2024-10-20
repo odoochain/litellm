@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from litellm._logging import verbose_logger
-from litellm.caching import DualCache, InMemoryCache
+from litellm.caching.caching import DualCache, InMemoryCache
 from litellm.secret_managers.main import get_secret
 
 from .base import BaseLLM
@@ -38,7 +38,7 @@ class BaseAWSLLM(BaseLLM):
         credential_str = json.dumps(credential_args, sort_keys=True)
         return hashlib.sha256(credential_str.encode()).hexdigest()
 
-    def get_credentials(
+    def get_credentials(  # noqa: PLR0915
         self,
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,

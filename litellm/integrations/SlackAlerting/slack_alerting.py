@@ -21,7 +21,7 @@ import litellm.litellm_core_utils
 import litellm.litellm_core_utils.litellm_logging
 import litellm.types
 from litellm._logging import verbose_logger, verbose_proxy_logger
-from litellm.caching import DualCache
+from litellm.caching.caching import DualCache
 from litellm.integrations.custom_batch_logger import CustomBatchLogger
 from litellm.litellm_core_utils.exception_mapping_utils import (
     _add_key_name_and_team_to_alert,
@@ -287,7 +287,7 @@ class SlackAlerting(CustomBatchLogger):
         except Exception:
             return 0
 
-    async def send_daily_reports(self, router) -> bool:
+    async def send_daily_reports(self, router) -> bool:  # noqa: PLR0915
         """
         Send a daily report on:
         - Top 5 deployments with most failed requests
@@ -573,7 +573,7 @@ class SlackAlerting(CustomBatchLogger):
                 ttl=self.alerting_args.budget_alert_ttl,
             )
 
-    async def budget_alerts(
+    async def budget_alerts(  # noqa: PLR0915
         self,
         type: Literal[
             "token_budget",

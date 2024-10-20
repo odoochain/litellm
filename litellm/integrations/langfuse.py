@@ -143,7 +143,7 @@ class LangFuseLogger:
     #         level ="ERROR" # can be any of DEBUG, DEFAULT, WARNING or ERROR
     #         status_message='error' # can be any string (e.g. stringified stack trace or error body)
     #     )
-    def log_event(
+    def log_event(  # noqa: PLR0915
         self,
         kwargs,
         response_obj,
@@ -191,7 +191,6 @@ class LangFuseLogger:
                         pass
 
             # end of processing langfuse ########################
-
             if (
                 level == "ERROR"
                 and status_message is not None
@@ -235,6 +234,14 @@ class LangFuseLogger:
             ):
                 input = prompt
                 output = response_obj.results
+            elif (
+                kwargs.get("call_type") is not None
+                and kwargs.get("call_type") == "_arealtime"
+                and response_obj is not None
+                and isinstance(response_obj, list)
+            ):
+                input = kwargs.get("input")
+                output = response_obj
             elif (
                 kwargs.get("call_type") is not None
                 and kwargs.get("call_type") == "pass_through_endpoint"
@@ -342,7 +349,7 @@ class LangFuseLogger:
             )
         )
 
-    def _log_langfuse_v2(
+    def _log_langfuse_v2(  # noqa: PLR0915
         self,
         user_id,
         metadata,
@@ -657,10 +664,10 @@ class LangFuseLogger:
             if "cache_key" in litellm.langfuse_default_tags:
                 _hidden_params = metadata.get("hidden_params", {}) or {}
                 _cache_key = _hidden_params.get("cache_key", None)
-                if _cache_key is None:
+                if _cache_key is None and litellm.cache is not None:
                     # fallback to using "preset_cache_key"
-                    _preset_cache_key = kwargs.get("litellm_params", {}).get(
-                        "preset_cache_key", None
+                    _preset_cache_key = litellm.cache._get_preset_cache_key_from_kwargs(
+                        **kwargs
                     )
                     _cache_key = _preset_cache_key
                 tags.append(f"cache_key:{_cache_key}")

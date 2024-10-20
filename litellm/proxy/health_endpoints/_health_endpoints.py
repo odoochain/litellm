@@ -53,7 +53,7 @@ async def test_endpoint(request: Request):
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def health_services_endpoint(
+async def health_services_endpoint(  # noqa: PLR0915
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     service: Union[
         Literal[
@@ -465,7 +465,7 @@ async def health_readiness():
         # check Cache
         cache_type = None
         if litellm.cache is not None:
-            from litellm.caching import RedisSemanticCache
+            from litellm.caching.caching import RedisSemanticCache
 
             cache_type = litellm.cache.type
 

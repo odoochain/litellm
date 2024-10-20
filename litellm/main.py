@@ -23,7 +23,18 @@ from concurrent import futures
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from functools import partial
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Type,
+    Union,
+    cast,
+)
 
 import dotenv
 import httpx
@@ -42,7 +53,12 @@ from litellm import (  # type: ignore
 )
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.mock_functions import (
+    mock_embedding,
+    mock_image_generation,
+)
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.llms.prompt_templates.common_utils import get_content_from_model_response
 from litellm.secret_managers.main import get_secret_str
 from litellm.utils import (
     CustomStreamWrapper,
@@ -65,7 +81,8 @@ from litellm.utils import (
 )
 
 from ._logging import verbose_logger
-from .caching import disable_cache, enable_cache, update_cache
+from .caching.caching import disable_cache, enable_cache, update_cache
+from .litellm_core_utils.streaming_chunk_builder_utils import ChunkProcessor
 from .llms import (
     aleph_alpha,
     baseten,
@@ -105,6 +122,7 @@ from .llms.OpenAI.audio_transcriptions import OpenAIAudioTranscription
 from .llms.OpenAI.chat.o1_handler import OpenAIO1ChatCompletion
 from .llms.OpenAI.openai import OpenAIChatCompletion, OpenAITextCompletion
 from .llms.predibase import PredibaseChatCompletion
+from .llms.prompt_templates.common_utils import get_completion_messages
 from .llms.prompt_templates.factory import (
     custom_prompt,
     function_call_prompt,
@@ -117,10 +135,7 @@ from .llms.sagemaker.sagemaker import SagemakerLLM
 from .llms.text_completion_codestral import CodestralTextCompletion
 from .llms.together_ai.completion.handler import TogetherAITextCompletion
 from .llms.triton import TritonChatCompletion
-from .llms.vertex_ai_and_google_ai_studio import (
-    vertex_ai_anthropic,
-    vertex_ai_non_gemini,
-)
+from .llms.vertex_ai_and_google_ai_studio import vertex_ai_non_gemini
 from .llms.vertex_ai_and_google_ai_studio.gemini.vertex_and_google_ai_studio_gemini import (
     VertexLLM,
 )
@@ -143,7 +158,13 @@ from .llms.vertex_ai_and_google_ai_studio.vertex_embeddings.embedding_handler im
     VertexEmbedding,
 )
 from .llms.watsonx import IBMWatsonXAI
-from .types.llms.openai import HttpxBinaryResponseContent
+from .types.llms.openai import (
+    ChatCompletionAssistantMessage,
+    ChatCompletionAudioParam,
+    ChatCompletionModality,
+    ChatCompletionUserMessage,
+    HttpxBinaryResponseContent,
+)
 from .types.utils import (
     AdapterCompletionStreamWrapper,
     ChatCompletionMessageToolCall,
@@ -281,6 +302,8 @@ async def acompletion(
     stop=None,
     max_tokens: Optional[int] = None,
     max_completion_tokens: Optional[int] = None,
+    modalities: Optional[List[ChatCompletionModality]] = None,
+    audio: Optional[ChatCompletionAudioParam] = None,
     presence_penalty: Optional[float] = None,
     frequency_penalty: Optional[float] = None,
     logit_bias: Optional[dict] = None,
@@ -321,6 +344,8 @@ async def acompletion(
         stop(string/list, optional): - Up to 4 sequences where the LLM API will stop generating further tokens.
         max_tokens (integer, optional): The maximum number of tokens in the generated completion (default is infinity).
         max_completion_tokens (integer, optional): An upper bound for the number of tokens that can be generated for a completion, including visible output tokens and reasoning tokens.
+        modalities (List[ChatCompletionModality], optional): Output types that you would like the model to generate for this request. You can use `["text", "audio"]`
+        audio (ChatCompletionAudioParam, optional): Parameters for audio output. Required when audio output is requested with modalities: ["audio"]
         presence_penalty (float, optional): It is used to penalize new tokens based on their existence in the text so far.
         frequency_penalty: It is used to penalize new tokens based on their frequency in the text so far.
         logit_bias (dict, optional): Used to modify the probability of specific tokens appearing in the completion.
@@ -360,6 +385,8 @@ async def acompletion(
         "stop": stop,
         "max_tokens": max_tokens,
         "max_completion_tokens": max_completion_tokens,
+        "modalities": modalities,
+        "audio": audio,
         "presence_penalty": presence_penalty,
         "frequency_penalty": frequency_penalty,
         "logit_bias": logit_bias,
@@ -651,7 +678,7 @@ def mock_completion(
 
 
 @client
-def completion(  # type: ignore
+def completion(  # type: ignore # noqa: PLR0915
     model: str,
     # Optional OpenAI params: see https://platform.openai.com/docs/api-reference/chat/create
     messages: List = [],
@@ -664,6 +691,8 @@ def completion(  # type: ignore
     stop=None,
     max_completion_tokens: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    modalities: Optional[List[ChatCompletionModality]] = None,
+    audio: Optional[ChatCompletionAudioParam] = None,
     presence_penalty: Optional[float] = None,
     frequency_penalty: Optional[float] = None,
     logit_bias: Optional[dict] = None,
@@ -706,6 +735,8 @@ def completion(  # type: ignore
         stop(string/list, optional): - Up to 4 sequences where the LLM API will stop generating further tokens.
         max_tokens (integer, optional): The maximum number of tokens in the generated completion (default is infinity).
         max_completion_tokens (integer, optional): An upper bound for the number of tokens that can be generated for a completion, including visible output tokens and reasoning tokens.
+        modalities (List[ChatCompletionModality], optional): Output types that you would like the model to generate for this request.. You can use `["text", "audio"]`
+        audio (ChatCompletionAudioParam, optional): Parameters for audio output. Required when audio output is requested with modalities: ["audio"]
         presence_penalty (float, optional): It is used to penalize new tokens based on their existence in the text so far.
         frequency_penalty: It is used to penalize new tokens based on their frequency in the text so far.
         logit_bias (dict, optional): Used to modify the probability of specific tokens appearing in the completion.
@@ -747,6 +778,20 @@ def completion(  # type: ignore
     proxy_server_request = kwargs.get("proxy_server_request", None)
     fallbacks = kwargs.get("fallbacks", None)
     headers = kwargs.get("headers", None) or extra_headers
+    ensure_alternating_roles: Optional[bool] = kwargs.get(
+        "ensure_alternating_roles", None
+    )
+    user_continue_message: Optional[ChatCompletionUserMessage] = kwargs.get(
+        "user_continue_message", None
+    )
+    assistant_continue_message: Optional[ChatCompletionAssistantMessage] = kwargs.get(
+        "assistant_continue_message", None
+    )
+    if headers is None:
+        headers = {}
+
+    if extra_headers is not None:
+        headers.update(extra_headers)
     num_retries = kwargs.get(
         "num_retries", None
     )  ## alt. param for 'max_retries'. Use this to pass retries w/ instructor.
@@ -778,7 +823,12 @@ def completion(  # type: ignore
     ### Admin Controls ###
     no_log = kwargs.get("no-log", False)
     ### COPY MESSAGES ### - related issue https://github.com/BerriAI/litellm/discussions/4489
-    messages = deepcopy(messages)
+    messages = get_completion_messages(
+        messages=messages,
+        ensure_alternating_roles=ensure_alternating_roles or False,
+        user_continue_message=user_continue_message,
+        assistant_continue_message=assistant_continue_message,
+    )
     ######## end of unpacking kwargs ###########
     openai_params = [
         "functions",
@@ -791,6 +841,8 @@ def completion(  # type: ignore
         "stream_options",
         "stop",
         "max_completion_tokens",
+        "modalities",
+        "audio",
         "max_tokens",
         "presence_penalty",
         "frequency_penalty",
@@ -835,7 +887,7 @@ def completion(  # type: ignore
             deployments = [
                 m["litellm_params"] for m in model_list if m["model_name"] == model
             ]
-            return batch_completion_models(deployments=deployments, **args)
+            return litellm.batch_completion_models(deployments=deployments, **args)
         if litellm.model_alias_map and model in litellm.model_alias_map:
             model = litellm.model_alias_map[
                 model
@@ -950,6 +1002,8 @@ def completion(  # type: ignore
             stop=stop,
             max_tokens=max_tokens,
             max_completion_tokens=max_completion_tokens,
+            modalities=modalities,
+            audio=audio,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
             logit_bias=logit_bias,
@@ -964,7 +1018,6 @@ def completion(  # type: ignore
             max_retries=max_retries,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
-            extra_headers=extra_headers,
             api_version=api_version,
             parallel_tool_calls=parallel_tool_calls,
             messages=messages,
@@ -1067,6 +1120,9 @@ def completion(  # type: ignore
 
             headers = headers or litellm.headers
 
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
+
             if (
                 litellm.enable_preview_features
                 and litellm.AzureOpenAIO1Config().is_o1_model(model=model)
@@ -1166,6 +1222,9 @@ def completion(  # type: ignore
 
             headers = headers or litellm.headers
 
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
+
             ## LOAD CONFIG - if set
             config = litellm.AzureOpenAIConfig.get_config()
             for k, v in config.items():
@@ -1222,6 +1281,9 @@ def completion(  # type: ignore
             )
 
             headers = headers or litellm.headers
+
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
 
             ## LOAD CONFIG - if set
             config = litellm.AzureAIStudioConfig.get_config()
@@ -1303,6 +1365,9 @@ def completion(  # type: ignore
             )
 
             headers = headers or litellm.headers
+
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
 
             ## LOAD CONFIG - if set
             config = litellm.OpenAITextCompletionConfig.get_config()
@@ -1466,6 +1531,9 @@ def completion(  # type: ignore
 
             headers = headers or litellm.headers
 
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
+
             ## LOAD CONFIG - if set
             config = litellm.OpenAIConfig.get_config()
             for k, v in config.items():
@@ -1476,7 +1544,7 @@ def completion(  # type: ignore
 
             ## COMPLETION CALL
             try:
-                if litellm.OpenAIO1Config().is_model_o1_reasoning_model(model=model):
+                if litellm.openAIO1Config.is_model_o1_reasoning_model(model=model):
                     response = openai_o1_chat_completions.completion(
                         model=model,
                         messages=messages,
@@ -2228,31 +2296,12 @@ def completion(  # type: ignore
             )
 
             new_params = deepcopy(optional_params)
-            if "claude-3" in model:
-                model_response = vertex_ai_anthropic.completion(
-                    model=model,
-                    messages=messages,
-                    model_response=model_response,
-                    print_verbose=print_verbose,
-                    optional_params=new_params,
-                    litellm_params=litellm_params,
-                    logger_fn=logger_fn,
-                    encoding=encoding,
-                    vertex_location=vertex_ai_location,
-                    vertex_project=vertex_ai_project,
-                    vertex_credentials=vertex_credentials,
-                    logging_obj=logging,
-                    acompletion=acompletion,
-                    headers=headers,
-                    custom_prompt_dict=custom_prompt_dict,
-                    timeout=timeout,
-                    client=client,
-                )
-            elif (
+            if (
                 model.startswith("meta/")
                 or model.startswith("mistral")
                 or model.startswith("codestral")
                 or model.startswith("jamba")
+                or model.startswith("claude")
             ):
                 model_response = vertex_partner_models_chat_completion.completion(
                     model=model,
@@ -2263,6 +2312,7 @@ def completion(  # type: ignore
                     litellm_params=litellm_params,  # type: ignore
                     logger_fn=logger_fn,
                     encoding=encoding,
+                    api_base=api_base,
                     vertex_location=vertex_ai_location,
                     vertex_project=vertex_ai_project,
                     vertex_credentials=vertex_credentials,
@@ -3018,249 +3068,6 @@ async def acompletion_with_retries(*args, **kwargs):
     return await retryer(original_function, *args, **kwargs)
 
 
-def batch_completion(
-    model: str,
-    # Optional OpenAI params: see https://platform.openai.com/docs/api-reference/chat/create
-    messages: List = [],
-    functions: Optional[List] = None,
-    function_call: Optional[str] = None,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-    n: Optional[int] = None,
-    stream: Optional[bool] = None,
-    stop=None,
-    max_tokens: Optional[int] = None,
-    presence_penalty: Optional[float] = None,
-    frequency_penalty: Optional[float] = None,
-    logit_bias: Optional[dict] = None,
-    user: Optional[str] = None,
-    deployment_id=None,
-    request_timeout: Optional[int] = None,
-    timeout: Optional[int] = 600,
-    max_workers: Optional[int] = 100,
-    # Optional liteLLM function params
-    **kwargs,
-):
-    """
-    Batch litellm.completion function for a given model.
-
-    Args:
-        model (str): The model to use for generating completions.
-        messages (List, optional): List of messages to use as input for generating completions. Defaults to [].
-        functions (List, optional): List of functions to use as input for generating completions. Defaults to [].
-        function_call (str, optional): The function call to use as input for generating completions. Defaults to "".
-        temperature (float, optional): The temperature parameter for generating completions. Defaults to None.
-        top_p (float, optional): The top-p parameter for generating completions. Defaults to None.
-        n (int, optional): The number of completions to generate. Defaults to None.
-        stream (bool, optional): Whether to stream completions or not. Defaults to None.
-        stop (optional): The stop parameter for generating completions. Defaults to None.
-        max_tokens (float, optional): The maximum number of tokens to generate. Defaults to None.
-        presence_penalty (float, optional): The presence penalty for generating completions. Defaults to None.
-        frequency_penalty (float, optional): The frequency penalty for generating completions. Defaults to None.
-        logit_bias (dict, optional): The logit bias for generating completions. Defaults to {}.
-        user (str, optional): The user string for generating completions. Defaults to "".
-        deployment_id (optional): The deployment ID for generating completions. Defaults to None.
-        request_timeout (int, optional): The request timeout for generating completions. Defaults to None.
-        max_workers (int,optional): The maximum number of threads to use for parallel processing.
-
-    Returns:
-        list: A list of completion results.
-    """
-    args = locals()
-
-    batch_messages = messages
-    completions = []
-    model = model
-    custom_llm_provider = None
-    if model.split("/", 1)[0] in litellm.provider_list:
-        custom_llm_provider = model.split("/", 1)[0]
-        model = model.split("/", 1)[1]
-    if custom_llm_provider == "vllm":
-        optional_params = get_optional_params(
-            functions=functions,
-            function_call=function_call,
-            temperature=temperature,
-            top_p=top_p,
-            n=n,
-            stream=stream or False,
-            stop=stop,
-            max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            logit_bias=logit_bias,
-            user=user,
-            # params to identify the model
-            model=model,
-            custom_llm_provider=custom_llm_provider,
-        )
-        results = vllm.batch_completions(
-            model=model,
-            messages=batch_messages,
-            custom_prompt_dict=litellm.custom_prompt_dict,
-            optional_params=optional_params,
-        )
-    # all non VLLM models for batch completion models
-    else:
-
-        def chunks(lst, n):
-            """Yield successive n-sized chunks from lst."""
-            for i in range(0, len(lst), n):
-                yield lst[i : i + n]
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for sub_batch in chunks(batch_messages, 100):
-                for message_list in sub_batch:
-                    kwargs_modified = args.copy()
-                    kwargs_modified["messages"] = message_list
-                    original_kwargs = {}
-                    if "kwargs" in kwargs_modified:
-                        original_kwargs = kwargs_modified.pop("kwargs")
-                    future = executor.submit(
-                        completion, **kwargs_modified, **original_kwargs
-                    )
-                    completions.append(future)
-
-        # Retrieve the results from the futures
-        # results = [future.result() for future in completions]
-        # return exceptions if any
-        results = []
-        for future in completions:
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                results.append(exc)
-
-    return results
-
-
-# send one request to multiple models
-# return as soon as one of the llms responds
-def batch_completion_models(*args, **kwargs):
-    """
-    Send a request to multiple language models concurrently and return the response
-    as soon as one of the models responds.
-
-    Args:
-        *args: Variable-length positional arguments passed to the completion function.
-        **kwargs: Additional keyword arguments:
-            - models (str or list of str): The language models to send requests to.
-            - Other keyword arguments to be passed to the completion function.
-
-    Returns:
-        str or None: The response from one of the language models, or None if no response is received.
-
-    Note:
-        This function utilizes a ThreadPoolExecutor to parallelize requests to multiple models.
-        It sends requests concurrently and returns the response from the first model that responds.
-    """
-    import concurrent
-
-    if "model" in kwargs:
-        kwargs.pop("model")
-    if "models" in kwargs:
-        models = kwargs["models"]
-        kwargs.pop("models")
-        futures = {}
-        with ThreadPoolExecutor(max_workers=len(models)) as executor:
-            for model in models:
-                futures[model] = executor.submit(
-                    completion, *args, model=model, **kwargs
-                )
-
-            for model, future in sorted(
-                futures.items(), key=lambda x: models.index(x[0])
-            ):
-                if future.result() is not None:
-                    return future.result()
-    elif "deployments" in kwargs:
-        deployments = kwargs["deployments"]
-        kwargs.pop("deployments")
-        kwargs.pop("model_list")
-        nested_kwargs = kwargs.pop("kwargs", {})
-        futures = {}
-        with ThreadPoolExecutor(max_workers=len(deployments)) as executor:
-            for deployment in deployments:
-                for key in kwargs.keys():
-                    if (
-                        key not in deployment
-                    ):  # don't override deployment values e.g. model name, api base, etc.
-                        deployment[key] = kwargs[key]
-                kwargs = {**deployment, **nested_kwargs}
-                futures[deployment["model"]] = executor.submit(completion, **kwargs)
-
-            while futures:
-                # wait for the first returned future
-                print_verbose("\n\n waiting for next result\n\n")
-                done, _ = wait(futures.values(), return_when=FIRST_COMPLETED)
-                print_verbose(f"done list\n{done}")
-                for future in done:
-                    try:
-                        result = future.result()
-                        return result
-                    except Exception:
-                        # if model 1 fails, continue with response from model 2, model3
-                        print_verbose(
-                            "\n\ngot an exception, ignoring, removing from futures"
-                        )
-                        print_verbose(futures)
-                        new_futures = {}
-                        for key, value in futures.items():
-                            if future == value:
-                                print_verbose(f"removing key{key}")
-                                continue
-                            else:
-                                new_futures[key] = value
-                        futures = new_futures
-                        print_verbose(f"new futures{futures}")
-                        continue
-
-                print_verbose("\n\ndone looping through futures\n\n")
-                print_verbose(futures)
-
-    return None  # If no response is received from any model
-
-
-def batch_completion_models_all_responses(*args, **kwargs):
-    """
-    Send a request to multiple language models concurrently and return a list of responses
-    from all models that respond.
-
-    Args:
-        *args: Variable-length positional arguments passed to the completion function.
-        **kwargs: Additional keyword arguments:
-            - models (str or list of str): The language models to send requests to.
-            - Other keyword arguments to be passed to the completion function.
-
-    Returns:
-        list: A list of responses from the language models that responded.
-
-    Note:
-        This function utilizes a ThreadPoolExecutor to parallelize requests to multiple models.
-        It sends requests concurrently and collects responses from all models that respond.
-    """
-    import concurrent.futures
-
-    # ANSI escape codes for colored output
-
-    if "model" in kwargs:
-        kwargs.pop("model")
-    if "models" in kwargs:
-        models = kwargs["models"]
-        kwargs.pop("models")
-    else:
-        raise Exception("'models' param not in kwargs")
-
-    responses = []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(models)) as executor:
-        for idx, model in enumerate(models):
-            future = executor.submit(completion, *args, model=model, **kwargs)
-            if future.result() is not None:
-                responses.append(future.result())
-
-    return responses
-
-
 ### EMBEDDING ENDPOINTS ####################
 @client
 async def aembedding(*args, **kwargs) -> EmbeddingResponse:
@@ -3358,7 +3165,7 @@ async def aembedding(*args, **kwargs) -> EmbeddingResponse:
 
 
 @client
-def embedding(
+def embedding(  # noqa: PLR0915
     model,
     input=[],
     # Optional params
@@ -3408,6 +3215,7 @@ def embedding(
     tpm = kwargs.pop("tpm", None)
     litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
     cooldown_time = kwargs.get("cooldown_time", None)
+    mock_response: Optional[List[float]] = kwargs.get("mock_response", None)  # type: ignore
     max_parallel_requests = kwargs.pop("max_parallel_requests", None)
     model_info = kwargs.get("model_info", None)
     metadata = kwargs.get("metadata", None)
@@ -3513,6 +3321,9 @@ def embedding(
         custom_llm_provider=custom_llm_provider,
         **non_default_params,
     )
+
+    if mock_response is not None:
+        return mock_embedding(model=model, mock_response=mock_response)
     ### REGISTER CUSTOM MODEL PRICING -- IF GIVEN ###
     if input_cost_per_token is not None and output_cost_per_token is not None:
         litellm.register_model(
@@ -4129,7 +3940,7 @@ async def atext_completion(
 
 
 @client
-def text_completion(
+def text_completion(  # noqa: PLR0915
     prompt: Union[
         str, List[Union[str, List[Union[str, List[int]]]]]
     ],  # Required: The prompt(s) to generate completions for.
@@ -4296,12 +4107,12 @@ def text_completion(
                     return response["choices"][0]
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    futures = [
+                    completed_futures = [
                         executor.submit(process_prompt, i, individual_prompt)
                         for i, individual_prompt in enumerate(prompt)
                     ]
                     for i, future in enumerate(
-                        concurrent.futures.as_completed(futures)
+                        concurrent.futures.as_completed(completed_futures)
                     ):
                         responses[i] = future.result()
                     text_completion_response.choices = responses  # type: ignore
@@ -4596,7 +4407,7 @@ async def aimage_generation(*args, **kwargs) -> ImageResponse:
 
 
 @client
-def image_generation(
+def image_generation(  # noqa: PLR0915
     prompt: str,
     model: Optional[str] = None,
     n: Optional[int] = None,
@@ -4622,6 +4433,7 @@ def image_generation(
         aimg_generation = kwargs.get("aimg_generation", False)
         litellm_call_id = kwargs.get("litellm_call_id", None)
         logger_fn = kwargs.get("logger_fn", None)
+        mock_response: Optional[str] = kwargs.get("mock_response", None)  # type: ignore
         proxy_server_request = kwargs.get("proxy_server_request", None)
         model_info = kwargs.get("model_info", None)
         metadata = kwargs.get("metadata", {})
@@ -4731,6 +4543,8 @@ def image_generation(
             },
             custom_llm_provider=custom_llm_provider,
         )
+        if mock_response is not None:
+            return mock_image_generation(model=model, mock_response=mock_response)
 
         if custom_llm_provider == "azure":
             # azure configs
@@ -4848,6 +4662,8 @@ def image_generation(
                 model_response = custom_handler.aimage_generation(  # type: ignore
                     model=model,
                     prompt=prompt,
+                    api_key=api_key,
+                    api_base=api_base,
                     model_response=model_response,
                     optional_params=optional_params,
                     logging_obj=litellm_logging_obj,
@@ -4863,6 +4679,8 @@ def image_generation(
                 model_response = custom_handler.image_generation(
                     model=model,
                     prompt=prompt,
+                    api_key=api_key,
+                    api_base=api_base,
                     model_response=model_response,
                     optional_params=optional_params,
                     logging_obj=litellm_logging_obj,
@@ -5322,7 +5140,7 @@ def speech(
 ##### Health Endpoints #######################
 
 
-async def ahealth_check(
+async def ahealth_check(  # noqa: PLR0915
     model_params: dict,
     mode: Optional[
         Literal[
@@ -5585,73 +5403,37 @@ def stream_chunk_builder_text_completion(
     return TextCompletionResponse(**response)
 
 
-def stream_chunk_builder(
+def stream_chunk_builder(  # noqa: PLR0915
     chunks: list, messages: Optional[list] = None, start_time=None, end_time=None
 ) -> Optional[Union[ModelResponse, TextCompletionResponse]]:
     try:
-        model_response = litellm.ModelResponse()
+        if chunks is None:
+            raise litellm.APIError(
+                status_code=500,
+                message="Error building chunks for logging/streaming usage calculation",
+                llm_provider="",
+                model="",
+            )
+        if not chunks:
+            return None
+
+        processor = ChunkProcessor(chunks, messages)
+        chunks = processor.chunks
+
         ### BASE-CASE ###
         if len(chunks) == 0:
             return None
-        ### SORT CHUNKS BASED ON CREATED ORDER ##
-        print_verbose("Goes into checking if chunk has hiddden created at param")
-        if chunks[0]._hidden_params.get("created_at", None):
-            print_verbose("Chunks have a created at hidden param")
-            # Sort chunks based on created_at in ascending order
-            chunks = sorted(
-                chunks, key=lambda x: x._hidden_params.get("created_at", float("inf"))
-            )
-            print_verbose("Chunks sorted")
-
-        # set hidden params from chunk to model_response
-        if model_response is not None and hasattr(model_response, "_hidden_params"):
-            model_response._hidden_params = chunks[0].get("_hidden_params", {})
-        id = chunks[0]["id"]
-        object = chunks[0]["object"]
-        created = chunks[0]["created"]
-        model = chunks[0]["model"]
-        system_fingerprint = chunks[0].get("system_fingerprint", None)
-
+        ## Route to the text completion logic
         if isinstance(
             chunks[0]["choices"][0], litellm.utils.TextChoices
         ):  # route to the text completion logic
             return stream_chunk_builder_text_completion(
                 chunks=chunks, messages=messages
             )
-        role = chunks[0]["choices"][0]["delta"]["role"]
-        finish_reason = "stop"
-        for chunk in chunks:
-            if "choices" in chunk and len(chunk["choices"]) > 0:
-                if hasattr(chunk["choices"][0], "finish_reason"):
-                    finish_reason = chunk["choices"][0].finish_reason
-                elif "finish_reason" in chunk["choices"][0]:
-                    finish_reason = chunk["choices"][0]["finish_reason"]
 
+        model = chunks[0]["model"]
         # Initialize the response dictionary
-        response = {
-            "id": id,
-            "object": object,
-            "created": created,
-            "model": model,
-            "system_fingerprint": system_fingerprint,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": role, "content": ""},
-                    "finish_reason": finish_reason,
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 0,  # Modify as needed
-                "completion_tokens": 0,  # Modify as needed
-                "total_tokens": 0,  # Modify as needed
-            },
-        }
-
-        # Extract the "content" strings from the nested dictionaries within "choices"
-        content_list = []
-        combined_content = ""
-        combined_arguments = ""
+        response = processor.build_base_response(chunks)
 
         tool_call_chunks = [
             chunk
@@ -5662,75 +5444,10 @@ def stream_chunk_builder(
         ]
 
         if len(tool_call_chunks) > 0:
-            argument_list: List = []
-            delta = tool_call_chunks[0]["choices"][0]["delta"]
-            message = response["choices"][0]["message"]
-            message["tool_calls"] = []
-            id = None
-            name = None
-            type = None
-            tool_calls_list = []
-            prev_index = None
-            prev_name = None
-            prev_id = None
-            curr_id = None
-            curr_index = 0
-            for chunk in tool_call_chunks:
-                choices = chunk["choices"]
-                for choice in choices:
-                    delta = choice.get("delta", {})
-                    tool_calls = delta.get("tool_calls", "")
-                    # Check if a tool call is present
-                    if tool_calls and tool_calls[0].function is not None:
-                        if tool_calls[0].id:
-                            id = tool_calls[0].id
-                            curr_id = id
-                            if prev_id is None:
-                                prev_id = curr_id
-                        if tool_calls[0].index:
-                            curr_index = tool_calls[0].index
-                        if tool_calls[0].function.arguments:
-                            # Now, tool_calls is expected to be a dictionary
-                            arguments = tool_calls[0].function.arguments
-                            argument_list.append(arguments)
-                        if tool_calls[0].function.name:
-                            name = tool_calls[0].function.name
-                        if tool_calls[0].type:
-                            type = tool_calls[0].type
-                if prev_index is None:
-                    prev_index = curr_index
-                if prev_name is None:
-                    prev_name = name
-                if curr_index != prev_index:  # new tool call
-                    combined_arguments = "".join(argument_list)
-                    tool_calls_list.append(
-                        {
-                            "id": prev_id,
-                            "function": {
-                                "arguments": combined_arguments,
-                                "name": prev_name,
-                            },
-                            "type": type,
-                        }
-                    )
-                    argument_list = []  # reset
-                    prev_index = curr_index
-                    prev_id = curr_id
-                    prev_name = name
-
-            combined_arguments = (
-                "".join(argument_list) or "{}"
-            )  # base case, return empty dict
-
-            tool_calls_list.append(
-                {
-                    "id": id,
-                    "function": {"arguments": combined_arguments, "name": name},
-                    "type": type,
-                }
-            )
-            response["choices"][0]["message"]["content"] = None
-            response["choices"][0]["message"]["tool_calls"] = tool_calls_list
+            tool_calls_list = processor.get_combined_tool_content(tool_call_chunks)
+            _choice = cast(Choices, response.choices[0])
+            _choice.message.content = None
+            _choice.message.tool_calls = tool_calls_list
 
         function_call_chunks = [
             chunk
@@ -5741,32 +5458,11 @@ def stream_chunk_builder(
         ]
 
         if len(function_call_chunks) > 0:
-            argument_list = []
-            delta = function_call_chunks[0]["choices"][0]["delta"]
-            function_call = delta.get("function_call", "")
-            function_call_name = function_call.name
-
-            message = response["choices"][0]["message"]
-            message["function_call"] = {}
-            message["function_call"]["name"] = function_call_name
-
-            for chunk in function_call_chunks:
-                choices = chunk["choices"]
-                for choice in choices:
-                    delta = choice.get("delta", {})
-                    function_call = delta.get("function_call", "")
-
-                    # Check if a function call is present
-                    if function_call:
-                        # Now, function_call is expected to be a dictionary
-                        arguments = function_call.arguments
-                        argument_list.append(arguments)
-
-            combined_arguments = "".join(argument_list)
-            response["choices"][0]["message"]["content"] = None
-            response["choices"][0]["message"]["function_call"][
-                "arguments"
-            ] = combined_arguments
+            _choice = cast(Choices, response.choices[0])
+            _choice.message.content = None
+            _choice.message.function_call = (
+                processor.get_combined_function_call_content(function_call_chunks)
+            )
 
         content_chunks = [
             chunk
@@ -5777,109 +5473,34 @@ def stream_chunk_builder(
         ]
 
         if len(content_chunks) > 0:
-            for chunk in chunks:
-                choices = chunk["choices"]
-                for choice in choices:
-                    delta = choice.get("delta", {})
-                    content = delta.get("content", "")
-                    if content is None:
-                        continue  # openai v1.0.0 sets content = None for chunks
-                    content_list.append(content)
-
-            # Combine the "content" strings into a single string || combine the 'function' strings into a single string
-            combined_content = "".join(content_list)
-
-            # Update the "content" field within the response dictionary
-            response["choices"][0]["message"]["content"] = combined_content
-
-        completion_output = ""
-        if len(combined_content) > 0:
-            completion_output += combined_content
-        if len(combined_arguments) > 0:
-            completion_output += combined_arguments
-
-        # # Update usage information if needed
-        prompt_tokens = 0
-        completion_tokens = 0
-        ## anthropic prompt caching information ##
-        cache_creation_input_tokens: Optional[int] = None
-        cache_read_input_tokens: Optional[int] = None
-        completion_tokens_details: Optional[CompletionTokensDetails] = None
-        prompt_tokens_details: Optional[PromptTokensDetails] = None
-        for chunk in chunks:
-            usage_chunk: Optional[Usage] = None
-            if "usage" in chunk:
-                usage_chunk = chunk.usage
-            elif hasattr(chunk, "_hidden_params") and "usage" in chunk._hidden_params:
-                usage_chunk = chunk._hidden_params["usage"]
-            if usage_chunk is not None:
-                if "prompt_tokens" in usage_chunk:
-                    prompt_tokens = usage_chunk.get("prompt_tokens", 0) or 0
-                if "completion_tokens" in usage_chunk:
-                    completion_tokens = usage_chunk.get("completion_tokens", 0) or 0
-                if "cache_creation_input_tokens" in usage_chunk:
-                    cache_creation_input_tokens = usage_chunk.get(
-                        "cache_creation_input_tokens"
-                    )
-                if "cache_read_input_tokens" in usage_chunk:
-                    cache_read_input_tokens = usage_chunk.get("cache_read_input_tokens")
-                if hasattr(usage_chunk, "completion_tokens_details"):
-                    if isinstance(usage_chunk.completion_tokens_details, dict):
-                        completion_tokens_details = CompletionTokensDetails(
-                            **usage_chunk.completion_tokens_details
-                        )
-                    elif isinstance(
-                        usage_chunk.completion_tokens_details, CompletionTokensDetails
-                    ):
-                        completion_tokens_details = (
-                            usage_chunk.completion_tokens_details
-                        )
-                if hasattr(usage_chunk, "prompt_tokens_details"):
-                    if isinstance(usage_chunk.prompt_tokens_details, dict):
-                        prompt_tokens_details = PromptTokensDetails(
-                            **usage_chunk.prompt_tokens_details
-                        )
-                    elif isinstance(
-                        usage_chunk.prompt_tokens_details, PromptTokensDetails
-                    ):
-                        prompt_tokens_details = usage_chunk.prompt_tokens_details
-
-        try:
-            response["usage"]["prompt_tokens"] = prompt_tokens or token_counter(
-                model=model, messages=messages
+            response["choices"][0]["message"]["content"] = (
+                processor.get_combined_content(content_chunks)
             )
-        except (
-            Exception
-        ):  # don't allow this failing to block a complete streaming response from being returned
-            print_verbose("token_counter failed, assuming prompt tokens is 0")
-            response["usage"]["prompt_tokens"] = 0
-        response["usage"]["completion_tokens"] = completion_tokens or token_counter(
+
+        audio_chunks = [
+            chunk
+            for chunk in chunks
+            if len(chunk["choices"]) > 0
+            and "audio" in chunk["choices"][0]["delta"]
+            and chunk["choices"][0]["delta"]["audio"] is not None
+        ]
+
+        if len(audio_chunks) > 0:
+            _choice = cast(Choices, response.choices[0])
+            _choice.message.audio = processor.get_combined_audio_content(audio_chunks)
+
+        completion_output = get_content_from_model_response(response)
+
+        usage = processor.calculate_usage(
+            chunks=chunks,
             model=model,
-            text=completion_output,
-            count_response_tokens=True,  # count_response_tokens is a Flag to tell token counter this is a response, No need to add extra tokens we do for input messages
-        )
-        response["usage"]["total_tokens"] = (
-            response["usage"]["prompt_tokens"] + response["usage"]["completion_tokens"]
+            completion_output=completion_output,
+            messages=messages,
         )
 
-        if cache_creation_input_tokens is not None:
-            response["usage"][
-                "cache_creation_input_tokens"
-            ] = cache_creation_input_tokens
-        if cache_read_input_tokens is not None:
-            response["usage"]["cache_read_input_tokens"] = cache_read_input_tokens
+        setattr(response, "usage", usage)
 
-        if completion_tokens_details is not None:
-            response["usage"]["completion_tokens_details"] = completion_tokens_details
-        if prompt_tokens_details is not None:
-            response["usage"]["prompt_tokens_details"] = prompt_tokens_details
-
-        return convert_to_model_response_object(
-            response_object=response,
-            model_response_object=model_response,
-            start_time=start_time,
-            end_time=end_time,
-        )  # type: ignore
+        return response
     except Exception as e:
         verbose_logger.exception(
             "litellm.main.py::stream_chunk_builder() - Exception occurred - {}".format(
