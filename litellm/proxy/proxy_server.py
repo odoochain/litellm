@@ -27,12 +27,12 @@ from typing import (
 
 import requests
 
-if TYPE_CHECKING:
-    from opentelemetry.trace import Span as _Span
-
-    Span = _Span
-else:
-    Span = Any
+# if TYPE_CHECKING:
+#     from opentelemetry.trace import Span as _Span
+#
+#     Span = _Span
+# else:
+#     Span = Any
 
 
 def showwarning(message, category, filename, lineno, file=None, line=None):
@@ -1063,6 +1063,16 @@ async def update_database(  # noqa: PLR0915
         )
 
 
+from opentelemetry.trace import Span as _Span
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span
+
+    Span = _Span
+else:
+    Span = Any
+
+
 async def update_cache(  # noqa: PLR0915
     token: Optional[str],
     user_id: Optional[str],
@@ -1076,6 +1086,9 @@ async def update_cache(  # noqa: PLR0915
 
     Put any alerting logic in here.
     """
+    if parent_otel_span is not None:
+        if not isinstance(parent_otel_span, Span):
+            raise TypeError("parent_otel_span must be an instance of Span")
 
     values_to_update_in_cache: List[Tuple[Any, Any]] = []
 
@@ -1543,7 +1556,6 @@ class ProxyConfig:
             ## INIT PROXY REDIS USAGE CLIENT ##
             redis_usage_cache = litellm.cache.cache
 
-            
     async def get_config(self, config_file_path: Optional[str] = None) -> dict:
         """
         Load config file
