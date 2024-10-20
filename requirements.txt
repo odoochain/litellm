@@ -49,3 +49,5 @@ jsonschema==4.22.0 # validating json schema
 websockets==12.0 # for realtime API;litellm 10.4
 aiobotocore[boto3]==2.13.1
 ####
+
+azure-keyvault-secrets==4.9.0
